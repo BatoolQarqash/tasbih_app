@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../providers/adhkar_reminder_provider.dart';
 import '../providers/counter_provider.dart';
-import '../providers/reminder_provider.dart';
+import 'notification_permission_rationale_dialog.dart';
 
 const _darkGreen = Color(0xFF1B4332);
 
-// Dialog الإعدادات: اختيار هدف التسبيح + تفعيل التذكير اليومي ووقته
+// Dialog الإعدادات: اختيار هدف التسبيح + تفعيل تذكيري أذكار الصباح والمساء ووقتهما
 Future<void> showSettingsDialog(BuildContext context, WidgetRef ref) {
   return showDialog(
     context: context,
@@ -26,9 +27,10 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
   late bool _isCustomTarget;
   late final TextEditingController _customTargetController;
 
-  late bool _reminderEnabled;
-  late TimeOfDay _reminderTime;
-  late String _reminderMessage;
+  late bool _morningEnabled;
+  late TimeOfDay _morningTime;
+  late bool _eveningEnabled;
+  late TimeOfDay _eveningTime;
 
   bool _saving = false;
 
@@ -42,10 +44,11 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
       text: _isCustomTarget ? currentTarget.toString() : '',
     );
 
-    final reminder = ref.read(reminderProvider);
-    _reminderEnabled = reminder.enabled;
-    _reminderTime = TimeOfDay(hour: reminder.hour, minute: reminder.minute);
-    _reminderMessage = reminder.message;
+    final reminders = ref.read(adhkarReminderProvider);
+    _morningEnabled = reminders.morningEnabled;
+    _morningTime = TimeOfDay(hour: reminders.morningHour, minute: reminders.morningMinute);
+    _eveningEnabled = reminders.eveningEnabled;
+    _eveningTime = TimeOfDay(hour: reminders.eveningHour, minute: reminders.eveningMinute);
   }
 
   @override
@@ -61,14 +64,32 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
     return value;
   }
 
-  Future<void> _pickTime() async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: _reminderTime,
-    );
-    if (picked != null) {
-      setState(() => _reminderTime = picked);
+  Future<void> _pickMorningTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _morningTime);
+    if (picked != null) setState(() => _morningTime = picked);
+  }
+
+  Future<void> _pickEveningTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _eveningTime);
+    if (picked != null) setState(() => _eveningTime = picked);
+  }
+
+  // بيعرض شرح سبب الحاجة للإشعارات قبل ما يفعّل السويتش (قبل طلب صلاحية
+  // النظام الفعلي اللي بيصير لاحقاً عند الحفظ)
+  Future<void> _onToggleMorning(bool value) async {
+    if (value) {
+      final proceed = await showNotificationPermissionRationale(context);
+      if (!proceed) return;
     }
+    setState(() => _morningEnabled = value);
+  }
+
+  Future<void> _onToggleEvening(bool value) async {
+    if (value) {
+      final proceed = await showNotificationPermissionRationale(context);
+      if (!proceed) return;
+    }
+    setState(() => _eveningEnabled = value);
   }
 
   Future<void> _save() async {
@@ -84,24 +105,34 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
 
     await ref.read(targetProvider.notifier).setTarget(target);
 
-    final granted = await ref.read(reminderProvider.notifier).setReminder(
-          enabled: _reminderEnabled,
-          hour: _reminderTime.hour,
-          minute: _reminderTime.minute,
-          message: _reminderMessage,
+    final morningGranted = await ref.read(adhkarReminderProvider.notifier).setMorningReminder(
+          enabled: _morningEnabled,
+          hour: _morningTime.hour,
+          minute: _morningTime.minute,
+        );
+    final eveningGranted = await ref.read(adhkarReminderProvider.notifier).setEveningReminder(
+          enabled: _eveningEnabled,
+          hour: _eveningTime.hour,
+          minute: _eveningTime.minute,
         );
 
     if (!mounted) return;
     setState(() => _saving = false);
 
-    if (_reminderEnabled && !granted) {
-      setState(() => _reminderEnabled = false);
+    final deniedMorning = _morningEnabled && !morningGranted;
+    final deniedEvening = _eveningEnabled && !eveningGranted;
+
+    if (deniedMorning || deniedEvening) {
+      setState(() {
+        if (deniedMorning) _morningEnabled = false;
+        if (deniedEvening) _eveningEnabled = false;
+      });
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
           title: Text('الإشعارات غير مفعّلة', style: GoogleFonts.cairo(fontWeight: FontWeight.bold)),
           content: Text(
-            'تم رفض صلاحية الإشعارات. لتفعيل التذكير اليومي، يرجى تفعيل الإشعارات لهذا التطبيق يدوياً من إعدادات الجهاز.',
+            'تم رفض صلاحية الإشعارات. لتفعيل تذكير الأذكار، يرجى تفعيل الإشعارات لهذا التطبيق يدوياً من إعدادات الجهاز.',
             style: GoogleFonts.cairo(),
           ),
           actions: [
@@ -133,86 +164,84 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
       content: SizedBox(
         width: dialogWidth,
         child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'هدف التسبيح',
-              style: GoogleFonts.cairo(fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final preset in targetPresets)
-                  ChoiceChip(
-                    label: Text('$preset', style: GoogleFonts.cairo()),
-                    selected: !_isCustomTarget && _selectedTarget == preset,
-                    onSelected: (_) => setState(() {
-                      _isCustomTarget = false;
-                      _selectedTarget = preset;
-                    }),
-                  ),
-                ChoiceChip(
-                  label: Text('مخصص', style: GoogleFonts.cairo()),
-                  selected: _isCustomTarget,
-                  onSelected: (_) => setState(() => _isCustomTarget = true),
-                ),
-              ],
-            ),
-            if (_isCustomTarget) ...[
-              const SizedBox(height: 10),
-              TextField(
-                controller: _customTargetController,
-                keyboardType: TextInputType.number,
-                style: GoogleFonts.cairo(),
-                decoration: InputDecoration(
-                  hintText: 'اكتب رقم الهدف',
-                  hintStyle: GoogleFonts.cairo(),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ],
-            const Divider(height: 28),
-            Text(
-              'تذكير يومي',
-              style: GoogleFonts.cairo(fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text('تفعيل التذكير اليومي', style: GoogleFonts.cairo()),
-              value: _reminderEnabled,
-              onChanged: (value) => setState(() => _reminderEnabled = value),
-            ),
-            if (_reminderEnabled) ...[
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text('وقت التذكير', style: GoogleFonts.cairo()),
-                trailing: OutlinedButton(
-                  onPressed: _pickTime,
-                  child: Text(_reminderTime.format(context), style: GoogleFonts.cairo()),
-                ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'هدف التسبيح',
+                style: GoogleFonts.cairo(fontWeight: FontWeight.bold, fontSize: 15),
               ),
               const SizedBox(height: 8),
-              Text('نص التذكير', style: GoogleFonts.cairo(fontSize: 13)),
-              const SizedBox(height: 6),
-              DropdownButtonFormField<String>(
-                initialValue: _reminderMessage,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                ),
-                items: reminderMessages
-                    .map((msg) => DropdownMenuItem(value: msg, child: Text(msg, style: GoogleFonts.cairo())))
-                    .toList(),
-                onChanged: (value) {
-                  if (value != null) setState(() => _reminderMessage = value);
-                },
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final preset in targetPresets)
+                    ChoiceChip(
+                      label: Text('$preset', style: GoogleFonts.cairo()),
+                      selected: !_isCustomTarget && _selectedTarget == preset,
+                      onSelected: (_) => setState(() {
+                        _isCustomTarget = false;
+                        _selectedTarget = preset;
+                      }),
+                    ),
+                  ChoiceChip(
+                    label: Text('مخصص', style: GoogleFonts.cairo()),
+                    selected: _isCustomTarget,
+                    onSelected: (_) => setState(() => _isCustomTarget = true),
+                  ),
+                ],
               ),
+              if (_isCustomTarget) ...[
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _customTargetController,
+                  keyboardType: TextInputType.number,
+                  style: GoogleFonts.cairo(),
+                  decoration: InputDecoration(
+                    hintText: 'اكتب رقم الهدف',
+                    hintStyle: GoogleFonts.cairo(),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
+              const Divider(height: 28),
+              Text(
+                'تذكير الأذكار',
+                style: GoogleFonts.cairo(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('تذكير أذكار الصباح', style: GoogleFonts.cairo()),
+                value: _morningEnabled,
+                onChanged: (value) => _onToggleMorning(value),
+              ),
+              if (_morningEnabled)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('وقت تذكير الصباح', style: GoogleFonts.cairo()),
+                  trailing: OutlinedButton(
+                    onPressed: _pickMorningTime,
+                    child: Text(_morningTime.format(context), style: GoogleFonts.cairo()),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('تذكير أذكار المساء', style: GoogleFonts.cairo()),
+                value: _eveningEnabled,
+                onChanged: (value) => _onToggleEvening(value),
+              ),
+              if (_eveningEnabled)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('وقت تذكير المساء', style: GoogleFonts.cairo()),
+                  trailing: OutlinedButton(
+                    onPressed: _pickEveningTime,
+                    child: Text(_eveningTime.format(context), style: GoogleFonts.cairo()),
+                  ),
+                ),
             ],
-          ],
           ),
         ),
       ),

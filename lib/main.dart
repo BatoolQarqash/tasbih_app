@@ -4,7 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:tasbih_app/screens/splash_screen.dart';
-import 'screens/home_screen.dart';
+import 'screens/adhkar_session_screen.dart';
+import 'services/notification_service.dart';
+
+// مفتاح تنقّل عام حتى نقدر نفتح شاشة جلسة الأذكار من كولباك الإشعار مباشرة،
+// بغض النظر عن الشاشة اللي المستخدم واقف فيها حالياً
+final navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,6 +18,16 @@ void main() async {
   if (!kIsWeb) {
     await MobileAds.instance.initialize();
   }
+
+  // نهيّئ خدمة الإشعارات بدري قبل runApp، عشان: (1) نلغي التذكير العام
+  // القديم المُلغى من التطبيق، و(2) نلتقط أي ضغطة إشعار فتحت التطبيق من
+  // الصفر (cold start) قبل ما تبني أي شاشة
+  NotificationService.instance.onAdhkarNotificationTap = (type) {
+    navigatorKey.currentState?.push(
+      MaterialPageRoute(builder: (_) => AdhkarSessionScreen(type: type)),
+    );
+  };
+  await NotificationService.instance.init();
 
   runApp(
     const ProviderScope(
@@ -27,6 +42,7 @@ class TasbihApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'عداد التسبيح',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -41,7 +57,7 @@ class TasbihApp extends StatelessWidget {
           child: child!,
         );
       },
-   home: const SplashScreen(),
+      home: const SplashScreen(),
     );
   }
 }

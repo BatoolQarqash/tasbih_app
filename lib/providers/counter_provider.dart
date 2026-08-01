@@ -22,19 +22,39 @@ class CounterNotifier extends StateNotifier<int> {
     _loadCount();
   }
 
+  // المجموع الكلي محفوظ بالذاكرة كمصدر وحيد للحقيقة أثناء الجلسة، وما منعيد
+  // قراءته من SharedPreferences قبل كل كتابة؛ لو عملنا هيك، ضغطتين متسارعتين
+  // ممكن يقرؤوا نفس القيمة القديمة ويكتبوا فوق بعض فيضيع عدّ (lost update)
+  int _totalCount = 0;
+  bool _totalLoaded = false;
+
+  int get totalCount => _totalCount;
+
   Future<void> _loadCount() async {
     final prefs = await SharedPreferences.getInstance();
     state = prefs.getInt('counter') ?? 0;
+    _totalCount = prefs.getInt('total_count') ?? 0;
+    _totalLoaded = true;
   }
 
   Future<void> increment() async {
     state++;
+
+    // منزيد المجموع بالذاكرة قبل أي await، عشان لو استدعى الكولر increment()
+    // بدون ما ينتظرها (زي ما بيصير بزر التسبيح)، القيمة تنعكس فوراً بشكل
+    // متزامن قبل ما يقرا totalCount بعدها بنفس اللحظة
+    if (_totalLoaded) {
+      _totalCount++;
+    }
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('counter', state);
 
-    // نحفظ كمان المجموع الكلي (كل الأذكار من أول ما نزّلت التطبيق)
-    final total = prefs.getInt('total_count') ?? 0;
-    await prefs.setInt('total_count', total + 1);
+    if (!_totalLoaded) {
+      _totalCount = (prefs.getInt('total_count') ?? 0) + 1;
+      _totalLoaded = true;
+    }
+    await prefs.setInt('total_count', _totalCount);
   }
 
   Future<void> reset() async {
@@ -73,8 +93,9 @@ final targetProvider = StateNotifierProvider<TargetNotifier, int>((ref) {
   return TargetNotifier();
 });
 
-// Provider منفصل للمجموع الكلي (نعرضه بالإحصائيات)
-final totalCountProvider = FutureProvider<int>((ref) async {
-  final prefs = await SharedPreferences.getInstance();
-  return prefs.getInt('total_count') ?? 0;
+// Provider منفصل للمجموع الكلي (نعرضه بالإحصائيات)؛ بيتزامن تلقائياً مع
+// counterProvider لأن الاثنين بيتحدّثوا سوا جوا CounterNotifier.increment()
+final totalCountProvider = Provider<int>((ref) {
+  ref.watch(counterProvider);
+  return ref.read(counterProvider.notifier).totalCount;
 });

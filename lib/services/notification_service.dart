@@ -3,18 +3,34 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
+import '../models/adhkar_session.dart';
 
-// خدمة الإشعارات: تهيئة المكتبة + طلب الصلاحية + جدولة/إلغاء التذكير اليومي
+// خدمة الإشعارات: تهيئة المكتبة + طلب الصلاحية + جدولة/إلغاء تذكيري أذكار
+// الصباح والمساء + التعامل مع الضغط على الإشعار لفتح جلسة الأذكار المناسبة
 class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
 
-  final FlutterLocalNotificationsPlugin _plugin =
-      FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
 
-  static const int _dailyReminderId = 1001;
+  static const int _morningReminderId = 2001;
+  static const int _eveningReminderId = 2002;
+
+  // معرّف التذكير العام القديم (المُلغى من التطبيق)؛ لازم نُلغيه صراحة
+  // عشان ما يضل يشتغل بالخلفية عند المستخدمين اللي كانوا مفعّلينه بنسخة سابقة،
+  // لأنه مجدول بوضع "يتجدد تلقائياً" وما بينلغي لمجرد حذف الكود المسؤول عنه
+  static const int _legacyGenericReminderId = 1001;
 
   bool _initialized = false;
+
+  // يوصل هذا الكولباك من main.dart، وينفّذ لما ينضغط إشعار والتطبيق شغال
+  // (foreground أو background) - مو عند الإقلاع البارد
+  void Function(AdhkarType type)? onAdhkarNotificationTap;
+
+  // لو التطبيق انفتح لأول مرة بضغطة على إشعار وهو مقفول تماماً (cold start)،
+  // بينخزن هون النوع المطلوب فتحه؛ الشاشة الرئيسية بتقرأه مرة وحدة بس
+  // بعد أول frame وتصفّره
+  AdhkarType? pendingAdhkarLaunchType;
 
   Future<void> init() async {
     if (_initialized || kIsWeb) return;
@@ -34,8 +50,36 @@ class NotificationService {
       iOS: iosSettings,
     );
 
-    await _plugin.initialize(settings: settings);
+    await _plugin.initialize(
+      settings: settings,
+      onDidReceiveNotificationResponse: _handleNotificationResponse,
+    );
+
+    // ترحيل: إلغاء غير مشروط للتذكير العام القديم (راجع التعليق فوق)
+    await _plugin.cancel(id: _legacyGenericReminderId);
+
+    final launchDetails = await _plugin.getNotificationAppLaunchDetails();
+    if (launchDetails?.didNotificationLaunchApp ?? false) {
+      pendingAdhkarLaunchType = _typeFromPayload(launchDetails?.notificationResponse?.payload);
+    }
+
     _initialized = true;
+  }
+
+  void _handleNotificationResponse(NotificationResponse response) {
+    final type = _typeFromPayload(response.payload);
+    if (type != null) onAdhkarNotificationTap?.call(type);
+  }
+
+  AdhkarType? _typeFromPayload(String? payload) {
+    switch (payload) {
+      case 'morning':
+        return AdhkarType.morning;
+      case 'evening':
+        return AdhkarType.evening;
+      default:
+        return null;
+    }
   }
 
   // بيرجع true إذا انعطت الصلاحية، false إذا رفضها المستخدم
@@ -63,23 +107,30 @@ class NotificationService {
     return true;
   }
 
-  Future<void> scheduleDaily({
+  // مقصودة inexactAllowWhileIdle (بدون صلاحية المنبّه الدقيق): تذكير الأذكار
+  // إرشادي مو حرج التوقيت، وطلب صلاحية "SCHEDULE_EXACT_ALARM" ممكن يعرّض
+  // نشر التطبيق على Play Console لمراجعة إضافية بلا فائدة حقيقية تذكر هون
+  Future<void> scheduleAdhkarReminder({
+    required AdhkarType type,
     required int hour,
     required int minute,
-    required String message,
   }) async {
     if (kIsWeb) return;
 
+    final id = type == AdhkarType.morning ? _morningReminderId : _eveningReminderId;
+    final title = type.titleAr;
+
     await _plugin.zonedSchedule(
-      id: _dailyReminderId,
-      title: 'عداد التسبيح',
-      body: message,
+      id: id,
+      title: title,
+      body: 'حان وقت الأذكار 🌿',
+      payload: type.storageKey,
       scheduledDate: _nextInstanceOf(hour, minute),
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
-          'daily_reminder_channel',
-          'التذكير اليومي',
-          channelDescription: 'تذكير يومي بالذكر',
+          'adhkar_reminder_channel',
+          'تذكير الأذكار',
+          channelDescription: 'تذكير يومي بأذكار الصباح والمساء',
           importance: Importance.high,
           priority: Priority.high,
         ),
@@ -90,9 +141,10 @@ class NotificationService {
     );
   }
 
-  Future<void> cancelDaily() async {
+  Future<void> cancelAdhkarReminder(AdhkarType type) async {
     if (kIsWeb) return;
-    await _plugin.cancel(id: _dailyReminderId);
+    final id = type == AdhkarType.morning ? _morningReminderId : _eveningReminderId;
+    await _plugin.cancel(id: id);
   }
 
   tz.TZDateTime _nextInstanceOf(int hour, int minute) {

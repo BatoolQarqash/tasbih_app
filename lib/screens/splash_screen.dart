@@ -81,7 +81,7 @@ class _SplashScreenState extends State<SplashScreen>
                         children: [
                           // شعار التطبيق - غيّري المسار حسب اسم صورتك
                           Image.asset(
-                            'assets/images/Logo.png',
+                            'assets/images/logo.png',
                             width: logoSize,
                             height: logoSize,
                           ),

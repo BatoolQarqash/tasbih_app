@@ -2,9 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:vibration/vibration.dart';
+import '../data/achievements_data.dart';
+import '../providers/achievements_provider.dart';
+import '../providers/adhkar_reminder_provider.dart';
 import '../providers/counter_provider.dart';
-import '../providers/reminder_provider.dart';
+import '../providers/stats_provider.dart';
+import '../services/notification_service.dart';
+import '../widgets/achievement_unlocked_dialog.dart';
 import '../widgets/settings_dialog.dart';
+import '../widgets/tasbih_tap_button.dart';
+import 'achievements_screen.dart';
+import 'adhkar_session_screen.dart';
+import 'stats_screen.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -57,8 +66,8 @@ class HomeScreen extends ConsumerWidget {
     final count = ref.watch(counterProvider);
     final selectedTasbih = ref.watch(tasbihTypeProvider);
     final target = ref.watch(targetProvider);
-    // بنقرا الـ provider هون فقط عشان يتهيّأ ويجدول التذكير اليومي المحفوظ من قبل
-    ref.watch(reminderProvider);
+    // بنقرا الـ provider هون فقط عشان يتهيّأ ويجدول تذكيري الأذكار المحفوظين من قبل
+    ref.watch(adhkarReminderProvider);
 
     // مقاسات نسبية بدل الأرقام الثابتة، عشان تشتغل صح من أصغر هاتف لأكبر تابلت
     // وبالوضعين portrait/landscape (shortestSide بيمثل البعد الأصغر بالحالتين)
@@ -77,6 +86,28 @@ class HomeScreen extends ConsumerWidget {
       }
     });
 
+    // احتفال بفتح إنجاز جديد (مجموع/سلسلة)
+    ref.listen(achievementsProvider, (previous, next) {
+      if (next.unlockQueue.isNotEmpty) {
+        final id = next.unlockQueue.first;
+        final def = achievementsData.firstWhere((a) => a.id == id);
+        showAchievementUnlockedDialog(context, def);
+        ref.read(achievementsProvider.notifier).consumeNextUnlock();
+      }
+    });
+
+    // لو التطبيق انفتح بضغطة على إشعار وهو مقفول تماماً، نفتح جلسة الأذكار
+    // المناسبة مرة وحدة بس بعد أول frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final pendingType = NotificationService.instance.pendingAdhkarLaunchType;
+      if (pendingType != null) {
+        NotificationService.instance.pendingAdhkarLaunchType = null;
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => AdhkarSessionScreen(type: pendingType)),
+        );
+      }
+    });
+
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -89,6 +120,20 @@ class HomeScreen extends ConsumerWidget {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bar_chart),
+            tooltip: 'الإحصائيات',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const StatsScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.emoji_events),
+            tooltip: 'الإنجازات',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AchievementsScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
             tooltip: 'الإعدادات',
@@ -131,20 +176,16 @@ class HomeScreen extends ConsumerWidget {
                         // إجمالي التسبيح منذ تنزيل التطبيق
                         Consumer(
                           builder: (context, ref, child) {
-                            final totalAsync = ref.watch(totalCountProvider);
-                            return totalAsync.when(
-                              data: (total) => Text(
-                                'إجمالي التسبيح: $total',
-                                style: GoogleFonts.cairo(
-                                  fontSize: 14,
-                                  color: Colors.white,
-                                  shadows: const [
-                                    Shadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1)),
-                                  ],
-                                ),
+                            final total = ref.watch(totalCountProvider);
+                            return Text(
+                              'إجمالي التسبيح: $total',
+                              style: GoogleFonts.cairo(
+                                fontSize: 14,
+                                color: Colors.white,
+                                shadows: const [
+                                  Shadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1)),
+                                ],
                               ),
-                              loading: () => const SizedBox(),
-                              error: (_, _) => const SizedBox(),
                             );
                           },
                         ),
@@ -249,12 +290,15 @@ class HomeScreen extends ConsumerWidget {
                         const SizedBox(height: 32),
 
                         // زر التسبيح
-                        _TasbihButton(
+                        TasbihTapButton(
                           label: selectedTasbih,
                           size: circleSize,
                           onTap: () async {
                             ref.read(counterProvider.notifier).increment();
-                            ref.invalidate(totalCountProvider);
+                            // بتسجّل هاي بالإحصائيات اليومية وتحسب السلسلة
+                            // وتفحص إنجازات المجموع/السلسلة (recordTap تنادي
+                            // achievementsProvider.evaluate داخلياً)
+                            ref.read(statsProvider.notifier).recordTap();
 
                             final hasVibrator = await Vibration.hasVibrator();
                             if (hasVibrator) {
@@ -268,73 +312,6 @@ class HomeScreen extends ConsumerWidget {
                 ),
               );
             },
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// زر التسبيح مع حركة scale بسيطة عند الضغط
-class _TasbihButton extends StatefulWidget {
-  const _TasbihButton({required this.label, required this.onTap, required this.size});
-
-  final String label;
-  final VoidCallback onTap;
-  final double size;
-
-  @override
-  State<_TasbihButton> createState() => _TasbihButtonState();
-}
-
-class _TasbihButtonState extends State<_TasbihButton> {
-  double _scale = 1.0;
-
-  void _setScale(double value) => setState(() => _scale = value);
-
-  @override
-  Widget build(BuildContext context) {
-    // خط اسم الذكر جوا الدائرة بيتناسب مع حجم الدائرة نفسها، عشان ما يلمس
-    // الحواف على الدوائر الصغيرة وما يضل صغير جداً على الدوائر الكبيرة
-    final labelFontSize = (widget.size * 0.11).clamp(14.0, 22.0);
-
-    return GestureDetector(
-      onTapDown: (_) => _setScale(0.95),
-      onTapUp: (_) => _setScale(1.0),
-      onTapCancel: () => _setScale(1.0),
-      onTap: widget.onTap,
-      child: AnimatedScale(
-        scale: _scale,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeOut,
-        child: Container(
-          width: widget.size,
-          height: widget.size,
-          padding: EdgeInsets.all(widget.size * 0.1),
-          decoration: BoxDecoration(
-            color: HomeScreen._darkGreen,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.3),
-                blurRadius: 20,
-                spreadRadius: 2,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Center(
-            child: Text(
-              widget.label,
-              textAlign: TextAlign.center,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.cairo(
-                fontSize: labelFontSize,
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
           ),
         ),
       ),

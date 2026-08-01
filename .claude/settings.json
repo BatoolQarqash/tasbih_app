@@ -2,7 +2,34 @@
   "permissions": {
     "allow": [
       "Bash(git init *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git config *)",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(flutter --version)",
+      "Bash(flutter build *)",
+      "Bash(keytool -version)",
+      "Bash('/c/Program Files/Android/Android Studio/jbr/bin/keytool.exe' -genkeypair -v -keystore upload-keystore.jks -alias upload -keyalg RSA -keysize 2048 -validity 10000 -storepass * -keypass * -dname 'CN=Batool Qarqash, OU=Tasbih App, O=Tasbih App, L=, S=, C=JO')",
+      "Bash(flutter clean *)",
+      "Bash(git check-ignore *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(git ls-tree *)",
+      "Bash(git fetch *)",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(chromium-cli --help)",
+      "Bash(xargs wc -l)",
+      "Bash(where adb *)",
+      "Bash(adb devices *)",
+      "Bash(adb shell *)",
+      "Bash(adb install *)",
+      "Bash(adb logcat *)",
+      "Bash(flutter emulators *)",
+      "Bash(echo \"launching in background, pid $!\")",
+      "Bash(adb wait-for-device *)",
+      "Bash(flutter test *)"
     ]
   }
 }
